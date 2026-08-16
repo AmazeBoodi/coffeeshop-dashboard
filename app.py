@@ -33,28 +33,63 @@ with st.sidebar:
         st.stop()
 
     st.caption(f"Data available: {min_d} → {max_d}")
+
+    if "date_range_key" not in st.session_state:
+        st.session_state["date_range_key"] = (min_d, max_d)
+
     date_range = st.date_input(
-        "Date range", value=(min_d, max_d), min_value=min_d, max_value=max_d
+        "Date range", min_value=min_d, max_value=max_d, key="date_range_key"
     )
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
     else:
         start_date, end_date = min_d, max_d
 
-    compare_mode = st.checkbox("📊 Compare to previous period")
+    def _set_range(s, e):
+        s, e = max(s, min_d), min(e, max_d)
+        if s > e:
+            s, e = min_d, max_d
+        st.session_state["date_range_key"] = (s, e)
+
+    _anchor = max_d
+    _this_month_start = _anchor.replace(day=1)
+    _last_month_end = _this_month_start - datetime.timedelta(days=1)
+    _last_month_start = _last_month_end.replace(day=1)
+    _presets = [
+        ("7D", _anchor - datetime.timedelta(days=6), _anchor),
+        ("30D", _anchor - datetime.timedelta(days=29), _anchor),
+        ("This month", _this_month_start, _anchor),
+        ("Last month", _last_month_start, _last_month_end),
+        ("All", min_d, max_d),
+    ]
+    _pc = st.columns(len(_presets))
+    for _col, (_label, _s, _e) in zip(_pc, _presets):
+        _col.button(_label, use_container_width=True, key=f"preset_{_label}",
+                    on_click=_set_range, args=(_s, _e))
+
+    compare_mode = st.checkbox("📊 Compare to another period")
     prev_start = prev_end = None
     if compare_mode:
         period_len = (end_date - start_date).days + 1
-        prev_end = start_date - datetime.timedelta(days=1)
-        prev_start = prev_end - datetime.timedelta(days=period_len - 1)
-        if prev_end < min_d:
-            st.caption("⚠️ No earlier data available to compare against.")
-            compare_mode = False
-        elif prev_start < min_d:
-            st.caption(f"⚠️ Previous period clipped to available data — {min_d} → {prev_end}")
-            prev_start = min_d
+        default_end = start_date - datetime.timedelta(days=1)
+        default_start = default_end - datetime.timedelta(days=period_len - 1)
+        if default_end < min_d:
+            default_start, default_end = min_d, min(max_d, min_d + datetime.timedelta(days=period_len - 1))
         else:
-            st.caption(f"vs. {prev_start} → {prev_end}")
+            default_start = max(default_start, min_d)
+
+        cmp_range = st.date_input(
+            "Compare to (pick any range)",
+            value=(default_start, default_end),
+            min_value=min_d, max_value=max_d,
+            help="Defaults to the equal-length period right before your date range, "
+                 "but you can pick any other range in the data to compare against.",
+        )
+        if isinstance(cmp_range, tuple) and len(cmp_range) == 2:
+            prev_start, prev_end = cmp_range
+        else:
+            prev_start, prev_end = default_start, default_end
+        st.caption(f"vs. {prev_start} → {prev_end}")
 
     st.divider()
     all_categories = sorted(set(
@@ -99,9 +134,18 @@ if compare_mode:
 
 
 def money(x):
+    """Compact figure: 1.5M, 285.7K, 920 — never a wall of digits on a KPI tile."""
     if pd.isna(x):
         return "—"
-    return f"{x:,.0f}"
+    sign = "-" if x < 0 else ""
+    ax = abs(x)
+    if ax >= 1_000_000_000:
+        return f"{sign}{ax/1_000_000_000:,.2f}B"
+    if ax >= 1_000_000:
+        return f"{sign}{ax/1_000_000:,.2f}M"
+    if ax >= 1_000:
+        return f"{sign}{ax/1_000:,.1f}K"
+    return f"{sign}{ax:,.0f}"
 
 
 def section(df, name):
