@@ -1,17 +1,16 @@
 """
 Shared data-loading layer for the Streamlit dashboard.
 
-Reads the cleaned report files bundled under data/<folder>/*.xlsx in this
-repo (a snapshot produced by clean_reports.py on the source machine). This
-is a static snapshot for demo purposes - it won't pick up new downloads on
-its own. To refresh: regenerate data/ from a fresh clean_reports.py run and
-push the updated files.
+Reads data.xlsx in this repo - one sheet per report type, produced by
+build_data_xlsx.py from a cleaned per-day snapshot. This is a static demo
+snapshot, not a live feed. To refresh: rerun build_data_xlsx.py against an
+updated data/ snapshot, then commit the new data.xlsx.
 """
 from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_FILE = Path(__file__).parent / "data.xlsx"
 
 FOLDERS = {
     "complete_report": "Complete report",
@@ -27,40 +26,31 @@ FOLDERS = {
 }
 
 
-def _load_folder(folder_name: str) -> pd.DataFrame:
-    folder = DATA_DIR / folder_name
-    if not folder.exists():
-        return pd.DataFrame()
-    files = sorted(folder.glob("*.xlsx"))
-    if not files:
-        return pd.DataFrame()
-    frames = []
-    for f in files:
-        try:
-            frames.append(pd.read_excel(f, engine="openpyxl"))
-        except Exception as e:
-            st.warning(f"Couldn't read {f.name}: {e}")
-    if not frames:
-        return pd.DataFrame()
-    df = pd.concat(frames, ignore_index=True)
-
-    if folder_name == "Transaction Report by Time":
-        # this report has no real header row in the source at all - the first
-        # data row's own text ("Total ", <count>, <count>, <count>) gets read
-        # as column names, so pandas ends up with duplicate integer column
-        # labels. Rename positionally instead of trusting the header text.
-        cols = list(df.columns)
-        cols[3:7] = ["Time_Label", "Count_1", "Count_2", "Count_3"][: len(cols) - 3]
-        df.columns = cols
-
-    if "Report_Date" in df.columns:
-        df["Report_Date"] = pd.to_datetime(df["Report_Date"])
-    return df
-
-
 @st.cache_data(show_spinner="Loading cleaned reports...")
 def load_all() -> dict[str, pd.DataFrame]:
-    return {key: _load_folder(folder) for key, folder in FOLDERS.items()}
+    if not DATA_FILE.exists():
+        return {key: pd.DataFrame() for key in FOLDERS}
+
+    sheets = pd.read_excel(DATA_FILE, sheet_name=None, engine="openpyxl")
+    out = {}
+    for key, folder_name in FOLDERS.items():
+        df = sheets.get(key, pd.DataFrame())
+        if "note" in df.columns:  # placeholder for an empty report type
+            df = pd.DataFrame()
+
+        if not df.empty and folder_name == "Transaction Report by Time":
+            # this report has no real header row in the source at all - the
+            # first data row's own text ("Total ", <count>, <count>, <count>)
+            # gets read as column names, so pandas ends up with duplicate
+            # integer column labels. Rename positionally instead.
+            cols = list(df.columns)
+            cols[3:7] = ["Time_Label", "Count_1", "Count_2", "Count_3"][: len(cols) - 3]
+            df.columns = cols
+
+        if "Report_Date" in df.columns:
+            df["Report_Date"] = pd.to_datetime(df["Report_Date"])
+        out[key] = df
+    return out
 
 
 def date_bounds(dfs: dict[str, pd.DataFrame]):
