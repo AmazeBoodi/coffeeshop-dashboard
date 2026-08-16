@@ -99,18 +99,16 @@ with st.sidebar:
     st.divider()
     # "Category" means something different in every report (Menu Engineering:
     # Beverages/Food/Yogurt/Tobacco vs. Stock Movement: Raw Food/Beverages &
-    # Liquids/Packaging) - blending them into one list meant half the picks
-    # silently matched nothing. Category filters now live on their own page,
-    # scoped to that page's actual vocabulary. What IS genuinely shared across
-    # reports: staff names (Summary of voids' Server, Discounts' Employee are
-    # the same two people) - that's a real cross-report filter.
-    staff_names = sorted(set(
-        dfs["summary_of_voids"].get("Server", pd.Series(dtype=str)).dropna().unique().tolist()
-        + dfs["discount_by_invoice"].get("Employee", pd.Series(dtype=str)).dropna().unique().tolist()
-    ))
-    staff_filter = st.multiselect(
-        "Staff filter", staff_names,
-        help="Applies to Voids & Discounts (Server / Employee)",
+    # Liquids/Packaging) - blending them meant half the picks silently matched
+    # nothing. Category filters now live on their own page, scoped to that
+    # page's actual vocabulary. Staff names only existed in 2 of 10 reports -
+    # too narrow for a global filter. What every single report DOES share is
+    # Report_Date, so day-of-week is a real cross-report filter: "show me only
+    # Fridays" applies identically and meaningfully to all ten.
+    WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    weekday_filter = st.multiselect(
+        "Day of week filter", WEEKDAYS,
+        help="Applies to every report - narrows all of them to the selected weekdays",
     )
 
     st.divider()
@@ -137,11 +135,19 @@ def apply_values(df, col, values):
     return df
 
 
-F = {key: filter_dates(df, start_date, end_date) for key, df in dfs.items()}
+def apply_weekdays(df):
+    if not weekday_filter or df.empty or "Report_Date" not in df.columns:
+        return df
+    return df[df["Report_Date"].dt.day_name().isin(weekday_filter)]
+
+
+F = {key: apply_weekdays(filter_dates(df, start_date, end_date)) for key, df in dfs.items()}
 cr = F["complete_report"]
+if weekday_filter:
+    st.sidebar.caption(f"Days: {', '.join(weekday_filter)}")
 
 if compare_mode:
-    Fp = {key: filter_dates(df, prev_start, prev_end) for key, df in dfs.items()}
+    Fp = {key: apply_weekdays(filter_dates(df, prev_start, prev_end)) for key, df in dfs.items()}
     crp = Fp["complete_report"]
 
 
@@ -559,15 +565,11 @@ elif page == "Wastage":
 # --------------------------------------------------------- Voids & Disc. -
 elif page == "Voids & Discounts":
     st.title("Voids & Discounts")
-    if staff_filter:
-        st.caption(f"Filtered to staff: {', '.join(staff_filter)}")
     voids = F["summary_of_voids"]
     disc = F["discount_by_invoice"]
 
     voids_d = voids[voids["Row_Type"] == "Detail"] if not voids.empty else voids
-    voids_d = apply_values(voids_d, "Server", staff_filter)
     disc_inv = disc[disc["Row_Type"] == "Invoice"] if not disc.empty else disc
-    disc_inv = apply_values(disc_inv, "Employee", staff_filter)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -592,8 +594,7 @@ elif page == "Voids & Discounts":
             by_emp.columns = ["Employee", "Invoices", "Total Discount"]
             fig = px.bar(by_emp, x="Employee", y="Total Discount", title="Discounts by Employee")
             st.plotly_chart(fig, use_container_width=True)
-        disc_shown = apply_values(disc, "Employee", staff_filter)
-        st.dataframe(disc_shown.sort_values(["Report_Date", "Row_ID"]) if not disc_shown.empty else disc_shown, use_container_width=True, hide_index=True)
+        st.dataframe(disc.sort_values(["Report_Date", "Row_ID"]) if not disc.empty else disc, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------- Transactions ----
 elif page == "Transactions by Time":
