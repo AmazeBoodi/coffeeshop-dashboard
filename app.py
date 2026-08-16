@@ -55,17 +55,22 @@ with st.sidebar:
     _this_month_start = _anchor.replace(day=1)
     _last_month_end = _this_month_start - datetime.timedelta(days=1)
     _last_month_start = _last_month_end.replace(day=1)
-    _presets = [
+    # Two rows of 3 — the sidebar is ~330px, five-across wrapped every label
+    # into a vertical letter-stack. Short labels + fewer columns fixes it.
+    _presets_row1 = [
         ("7D", _anchor - datetime.timedelta(days=6), _anchor),
         ("30D", _anchor - datetime.timedelta(days=29), _anchor),
-        ("This month", _this_month_start, _anchor),
-        ("Last month", _last_month_start, _last_month_end),
+        ("MTD", _this_month_start, _anchor),
+    ]
+    _presets_row2 = [
+        ("Last mo.", _last_month_start, _last_month_end),
         ("All", min_d, max_d),
     ]
-    _pc = st.columns(len(_presets))
-    for _col, (_label, _s, _e) in zip(_pc, _presets):
-        _col.button(_label, use_container_width=True, key=f"preset_{_label}",
-                    on_click=_set_range, args=(_s, _e))
+    for _row in (_presets_row1, _presets_row2):
+        _pc = st.columns(len(_row))
+        for _col, (_label, _s, _e) in zip(_pc, _row):
+            _col.button(_label, use_container_width=True, key=f"preset_{_label}",
+                        on_click=_set_range, args=(_s, _e))
 
     compare_mode = st.checkbox("📊 Compare to another period")
     prev_start = prev_end = None
@@ -92,13 +97,20 @@ with st.sidebar:
         st.caption(f"vs. {prev_start} → {prev_end}")
 
     st.divider()
-    all_categories = sorted(set(
-        dfs["menu_engineering"].get("Category", pd.Series(dtype=str)).dropna().unique().tolist()
-        + dfs["stock_movement"].get("Category", pd.Series(dtype=str)).dropna().unique().tolist()
+    # "Category" means something different in every report (Menu Engineering:
+    # Beverages/Food/Yogurt/Tobacco vs. Stock Movement: Raw Food/Beverages &
+    # Liquids/Packaging) - blending them into one list meant half the picks
+    # silently matched nothing. Category filters now live on their own page,
+    # scoped to that page's actual vocabulary. What IS genuinely shared across
+    # reports: staff names (Summary of voids' Server, Discounts' Employee are
+    # the same two people) - that's a real cross-report filter.
+    staff_names = sorted(set(
+        dfs["summary_of_voids"].get("Server", pd.Series(dtype=str)).dropna().unique().tolist()
+        + dfs["discount_by_invoice"].get("Employee", pd.Series(dtype=str)).dropna().unique().tolist()
     ))
-    category_filter = st.multiselect(
-        "Category filter", all_categories,
-        help="Applies to Sales & Menu and Stock Movement pages",
+    staff_filter = st.multiselect(
+        "Staff filter", staff_names,
+        help="Applies to Voids & Discounts (Server / Employee)",
     )
 
     st.divider()
@@ -119,9 +131,9 @@ with st.sidebar:
     )
 
 
-def apply_category(df, col="Category"):
-    if category_filter and not df.empty and col in df.columns:
-        return df[df[col].isin(category_filter)]
+def apply_values(df, col, values):
+    if values and not df.empty and col in df.columns:
+        return df[df[col].isin(values)]
     return df
 
 
@@ -260,9 +272,16 @@ if page == "Overview":
 # -------------------------------------------------------- Sales & Menu ---
 elif page == "Sales & Menu":
     st.title("Sales & Menu")
-    me = apply_category(F["menu_engineering"])
-    if category_filter:
-        st.caption(f"Filtered to category: {', '.join(category_filter)}")
+    me_all = F["menu_engineering"]
+    c1, c2 = st.columns(2)
+    with c1:
+        menu_categories = sorted(me_all.get("Category", pd.Series(dtype=str)).dropna().unique())
+        pick_cat = st.multiselect("Category", menu_categories)
+    with c2:
+        menu_groups = sorted(me_all.get("Group", pd.Series(dtype=str)).dropna().unique())
+        pick_group = st.multiselect("Group", menu_groups)
+    me = apply_values(apply_values(me_all, "Category", pick_cat), "Group", pick_group)
+
     if me.empty:
         st.info("No Menu Engineering data in range.")
     else:
@@ -418,25 +437,27 @@ elif page == "Complete Report Explorer":
 # --------------------------------------------------------- Stock Movement
 elif page == "Stock Movement":
     st.title("Stock Movement")
-    sm = apply_category(F["stock_movement"])
-    if category_filter:
-        st.caption(f"Filtered to category: {', '.join(category_filter)}")
+    sm = F["stock_movement"]
     if sm.empty:
         st.info("No Stock Movement data in range.")
     else:
+        # Division and Group are identical columns in this report (verified) -
+        # one filter, not two redundant ones.
         col1, col2, col3 = st.columns(3)
-        locations = ["All"] + sorted(sm["Location"].dropna().unique().tolist())
-        categories = ["All"] + sorted(sm["Category"].dropna().unique().tolist())
         with col1:
-            loc = st.selectbox("Location", locations)
+            loc = st.selectbox("Location", ["All"] + sorted(sm["Location"].dropna().unique().tolist()))
         with col2:
-            cat = st.selectbox("Category", categories)
+            cat = st.selectbox("Category", ["All"] + sorted(sm["Category"].dropna().unique().tolist()))
+        with col3:
+            div = st.selectbox("Division", ["All"] + sorted(sm["Division"].dropna().unique().tolist()))
 
         view = sm.copy()
         if loc != "All":
             view = view[view["Location"] == loc]
         if cat != "All":
             view = view[view["Category"] == cat]
+        if div != "All":
+            view = view[view["Division"] == div]
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Purchases (qty)", money(view["Purchases"].sum()))
@@ -472,7 +493,9 @@ elif page == "Purchases":
     if purch.empty:
         st.info("No Purchase data in range.")
     else:
-        d = purch[purch["Row_Type"] == "Detail"]
+        suppliers = sorted(purch["Supplier"].dropna().unique())
+        pick_supplier = st.multiselect("Supplier", suppliers)
+        d = apply_values(purch[purch["Row_Type"] == "Detail"], "Supplier", pick_supplier)
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Spend", money(d["Total"].sum()))
         c2.metric("Line Items", len(d))
@@ -536,11 +559,15 @@ elif page == "Wastage":
 # --------------------------------------------------------- Voids & Disc. -
 elif page == "Voids & Discounts":
     st.title("Voids & Discounts")
+    if staff_filter:
+        st.caption(f"Filtered to staff: {', '.join(staff_filter)}")
     voids = F["summary_of_voids"]
     disc = F["discount_by_invoice"]
 
     voids_d = voids[voids["Row_Type"] == "Detail"] if not voids.empty else voids
+    voids_d = apply_values(voids_d, "Server", staff_filter)
     disc_inv = disc[disc["Row_Type"] == "Invoice"] if not disc.empty else disc
+    disc_inv = apply_values(disc_inv, "Employee", staff_filter)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -565,7 +592,8 @@ elif page == "Voids & Discounts":
             by_emp.columns = ["Employee", "Invoices", "Total Discount"]
             fig = px.bar(by_emp, x="Employee", y="Total Discount", title="Discounts by Employee")
             st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(disc.sort_values(["Report_Date", "Row_ID"]) if not disc.empty else disc, use_container_width=True, hide_index=True)
+        disc_shown = apply_values(disc, "Employee", staff_filter)
+        st.dataframe(disc_shown.sort_values(["Report_Date", "Row_ID"]) if not disc_shown.empty else disc_shown, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------- Transactions ----
 elif page == "Transactions by Time":
