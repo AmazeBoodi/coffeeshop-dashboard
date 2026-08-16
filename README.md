@@ -1,4 +1,4 @@
-# Stream Coffeeshop — Operations Dashboard
+# Coffee Shop Operations Dashboard
 
 Streamlit dashboard over Omega POS export data (sales, menu engineering,
 stock movement, purchases, wastage, voids, discounts, transactions).

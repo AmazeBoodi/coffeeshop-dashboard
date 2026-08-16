@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).parent
-SRC = ROOT / "data"
+SRC = Path(r"C:\Users\User\Desktop\TEST\02_Stream_To_Download\sample")
 OUT = ROOT / "data.xlsx"
 
 FOLDERS = {
@@ -36,12 +36,20 @@ def load_folder(folder_name: str) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def anonymize(df: pd.DataFrame) -> pd.DataFrame:
+    # strip the real branch name out of every column that carries it, so
+    # neither the workbook nor the deployed demo names the actual business.
+    return df.replace("Tribal", "Main Branch")
+
+
 def main():
     with pd.ExcelWriter(OUT, engine="openpyxl") as writer:
         for sheet, folder in FOLDERS.items():
             df = load_folder(folder)
             if df.empty:
                 df = pd.DataFrame({"note": ["no data in range"]})
+            else:
+                df = anonymize(df)
             df.to_excel(writer, sheet_name=sheet, index=False)
             print(f"{folder:<38} -> sheet '{sheet}': {len(df)} rows")
     print(f"\nWrote {OUT}")

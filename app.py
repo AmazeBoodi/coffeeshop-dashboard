@@ -1,13 +1,14 @@
 """
-Stream Coffeeshop - Operations Dashboard
+Coffee Shop Operations Dashboard
 
 Run locally with:
     streamlit run app.py
 
-Reads the cleaned report snapshot bundled in data/ (see data_loader.py).
+Reads the cleaned report snapshot bundled in data.xlsx (see data_loader.py).
 This is a static demo snapshot, not a live feed - see README.md for how
 to refresh it.
 """
+import datetime
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -15,13 +16,13 @@ import streamlit as st
 
 from data_loader import load_all, date_bounds, filter_dates
 
-st.set_page_config(page_title="Stream Coffeeshop Dashboard", page_icon="☕", layout="wide")
+st.set_page_config(page_title="Coffee Shop Dashboard", page_icon="☕", layout="wide")
 
 # ---------------------------------------------------------------- data ----
 dfs = load_all()
 
 with st.sidebar:
-    st.title("☕ Stream Coffeeshop")
+    st.title("☕ Operations Dashboard")
     if st.button("🔄 Refresh data", use_container_width=True):
         load_all.clear()
         st.rerun()
@@ -40,11 +41,38 @@ with st.sidebar:
     else:
         start_date, end_date = min_d, max_d
 
+    compare_mode = st.checkbox("📊 Compare to previous period")
+    prev_start = prev_end = None
+    if compare_mode:
+        period_len = (end_date - start_date).days + 1
+        prev_end = start_date - datetime.timedelta(days=1)
+        prev_start = prev_end - datetime.timedelta(days=period_len - 1)
+        if prev_end < min_d:
+            st.caption("⚠️ No earlier data available to compare against.")
+            compare_mode = False
+        elif prev_start < min_d:
+            st.caption(f"⚠️ Previous period clipped to available data — {min_d} → {prev_end}")
+            prev_start = min_d
+        else:
+            st.caption(f"vs. {prev_start} → {prev_end}")
+
+    st.divider()
+    all_categories = sorted(set(
+        dfs["menu_engineering"].get("Category", pd.Series(dtype=str)).dropna().unique().tolist()
+        + dfs["stock_movement"].get("Category", pd.Series(dtype=str)).dropna().unique().tolist()
+    ))
+    category_filter = st.multiselect(
+        "Category filter", all_categories,
+        help="Applies to Sales & Menu and Stock Movement pages",
+    )
+
+    st.divider()
     page = st.radio(
         "Section",
         [
             "Overview",
             "Sales & Menu",
+            "Product Explorer",
             "Complete Report Explorer",
             "Stock Movement",
             "Purchases",
@@ -55,8 +83,19 @@ with st.sidebar:
         ],
     )
 
+
+def apply_category(df, col="Category"):
+    if category_filter and not df.empty and col in df.columns:
+        return df[df[col].isin(category_filter)]
+    return df
+
+
 F = {key: filter_dates(df, start_date, end_date) for key, df in dfs.items()}
 cr = F["complete_report"]
+
+if compare_mode:
+    Fp = {key: filter_dates(df, prev_start, prev_end) for key, df in dfs.items()}
+    crp = Fp["complete_report"]
 
 
 def money(x):
@@ -69,45 +108,69 @@ def section(df, name):
     return df[df["Section"] == name] if not df.empty else df
 
 
-# ------------------------------------------------------------- Overview ---
-if page == "Overview":
-    st.title("Overview")
-    st.caption(f"{start_date} → {end_date}")
-
-    stats = section(cr, "Statistics")
+def compute_kpis(Fx):
+    """One period's KPI set, from a {key: df} bundle already date-filtered."""
+    stats = section(Fx["complete_report"], "Statistics")
     net_sales = stats[(stats["Row_Type"] == "Detail") & (stats["Description"] == "Net Sales")]["Total"].sum() if not stats.empty else 0
     gross_sales = stats[(stats["Row_Type"] == "Detail") & (stats["Description"] == "Gross Sales")]["Total"].sum() if not stats.empty else 0
     n_customers = stats[(stats["Row_Type"] == "Detail") & (stats["Description"] == "Number of Customers")]["Total"].sum() if not stats.empty else 0
 
-    disc = F["discount_by_invoice"]
+    disc = Fx["discount_by_invoice"]
     total_discounts = disc[disc["Row_Type"] == "Total"]["Discount_Amount"].sum() if not disc.empty else 0
 
-    purch = F["purchase"]
+    purch = Fx["purchase"]
     total_purchases = purch[purch["Row_Type"] == "Detail"]["Total"].sum() if not purch.empty else 0
 
-    siw = F["sales_item_wastage"]
-    wr = F["wastage_report"]
+    siw, wr = Fx["sales_item_wastage"], Fx["wastage_report"]
     wastage_cost = 0
     if not siw.empty:
         wastage_cost += siw[siw["Row_Type"] == "Detail"]["Total Cost"].sum()
     if not wr.empty:
         wastage_cost += wr[wr["Row_Type"] == "Detail"]["Total Cost"].sum()
 
-    voids = F["summary_of_voids"]
+    voids = Fx["summary_of_voids"]
     void_value = voids[voids["Row_Type"] == "Detail"]["Value"].sum() if not voids.empty else 0
     void_count = len(voids[voids["Row_Type"] == "Detail"]) if not voids.empty else 0
 
+    return dict(
+        net_sales=net_sales, gross_sales=gross_sales, n_customers=n_customers,
+        total_discounts=total_discounts, total_purchases=total_purchases,
+        wastage_cost=wastage_cost, void_value=void_value, void_count=void_count,
+    )
+
+
+def pct_delta(now, prev):
+    if not prev:
+        return None
+    return f"{(now - prev) / prev * 100:+.1f}%"
+
+
+# ------------------------------------------------------------- Overview ---
+if page == "Overview":
+    st.title("Overview")
+    st.caption(f"{start_date} → {end_date}")
+
+    kpi = compute_kpis(F)
+    kpi_prev = compute_kpis(Fp) if compare_mode else None
+    stats = section(cr, "Statistics")
+
+    def delta(key):
+        return pct_delta(kpi[key], kpi_prev[key]) if kpi_prev else None
+
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Net Sales", money(net_sales))
-    c2.metric("Gross Sales", money(gross_sales))
-    c3.metric("Customers", money(n_customers))
-    c4.metric("Discounts Given", money(total_discounts))
-    c5.metric("Purchases", money(total_purchases))
-    c6.metric("Wastage Cost", money(wastage_cost))
+    c1.metric("Net Sales", money(kpi["net_sales"]), delta("net_sales"))
+    c2.metric("Gross Sales", money(kpi["gross_sales"]), delta("gross_sales"))
+    c3.metric("Customers", money(kpi["n_customers"]), delta("n_customers"))
+    c4.metric("Discounts Given", money(kpi["total_discounts"]), delta("total_discounts"), delta_color="inverse")
+    c5.metric("Purchases", money(kpi["total_purchases"]), delta("total_purchases"), delta_color="inverse")
+    c6.metric("Wastage Cost", money(kpi["wastage_cost"]), delta("wastage_cost"), delta_color="inverse")
 
     c7, c8 = st.columns(2)
-    c7.metric("Void Value", money(void_value))
-    c8.metric("Void Count", void_count)
+    c7.metric("Void Value", money(kpi["void_value"]), delta("void_value"), delta_color="inverse")
+    c8.metric("Void Count", kpi["void_count"])
+
+    if compare_mode:
+        st.caption(f"Δ vs. previous period ({prev_start} → {prev_end})")
 
     st.divider()
 
@@ -116,9 +179,23 @@ if page == "Overview":
             stats[(stats["Row_Type"] == "Detail") & (stats["Description"] == "Net Sales")]
             .groupby("Report_Date")["Total"].sum().reset_index()
         )
-        fig = px.line(daily, x="Report_Date", y="Total", title="Net Sales by Day", markers=True)
-        fig.update_layout(yaxis_title="Net Sales")
-        st.plotly_chart(fig, use_container_width=True)
+        if compare_mode:
+            statsp = section(crp, "Statistics")
+            dailyp = (
+                statsp[(statsp["Row_Type"] == "Detail") & (statsp["Description"] == "Net Sales")]
+                .groupby("Report_Date")["Total"].sum().reset_index()
+            )
+            daily["Day #"] = (daily["Report_Date"] - daily["Report_Date"].min()).dt.days
+            dailyp["Day #"] = (dailyp["Report_Date"] - dailyp["Report_Date"].min()).dt.days
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=daily["Day #"], y=daily["Total"], name=f"Current ({start_date} →)", mode="lines+markers"))
+            fig.add_trace(go.Scatter(x=dailyp["Day #"], y=dailyp["Total"], name=f"Previous ({prev_start} →)", mode="lines+markers"))
+            fig.update_layout(title="Net Sales by Day — Current vs. Previous Period", xaxis_title="Day # into period", yaxis_title="Net Sales")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            fig = px.line(daily, x="Report_Date", y="Total", title="Net Sales by Day", markers=True)
+            fig.update_layout(yaxis_title="Net Sales")
+            st.plotly_chart(fig, use_container_width=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -139,7 +216,9 @@ if page == "Overview":
 # -------------------------------------------------------- Sales & Menu ---
 elif page == "Sales & Menu":
     st.title("Sales & Menu")
-    me = F["menu_engineering"]
+    me = apply_category(F["menu_engineering"])
+    if category_filter:
+        st.caption(f"Filtered to category: {', '.join(category_filter)}")
     if me.empty:
         st.info("No Menu Engineering data in range.")
     else:
@@ -180,6 +259,91 @@ elif page == "Sales & Menu":
         st.subheader("All items")
         st.dataframe(agg.sort_values("Revenue", ascending=False), use_container_width=True, hide_index=True)
 
+# ----------------------------------------------------- Product Explorer --
+elif page == "Product Explorer":
+    st.title("Product Explorer")
+    st.caption(
+        "Ties Sales, Stock Movement, Purchases and Wastage together for one product. "
+        "Matched by exact product name across reports — a name spelled slightly "
+        "differently in one report (e.g. a trailing space) won't join up."
+    )
+
+    me = F["menu_engineering"]
+    sm = F["stock_movement"]
+    pu = F["purchase"]
+    siw = F["sales_item_wastage"]
+    wr = F["wastage_report"]
+
+    name_cols = [
+        (me, "Menu Item"), (sm, "Product"), (pu, "Product Description"),
+        (siw, "Product Description"), (wr, "Product Description"),
+    ]
+    all_names = sorted(set().union(*[
+        set(df[col].dropna().unique()) for df, col in name_cols if not df.empty and col in df.columns
+    ]))
+
+    if not all_names:
+        st.info("No product data in range.")
+    else:
+        product = st.selectbox("Product", all_names)
+
+        me_p = me[(me["Menu Item"] == product) & (me["Row_Type"] == "Detail")] if not me.empty else me
+        sm_p = sm[sm["Product"] == product] if not sm.empty else sm
+        pu_p = pu[(pu["Product Description"] == product) & (pu["Row_Type"] == "Detail")] if not pu.empty else pu
+        siw_p = siw[(siw["Product Description"] == product) & (siw["Row_Type"] == "Detail")] if not siw.empty else siw
+        wr_p = wr[(wr["Product Description"] == product) & (wr["Row_Type"] == "Detail")] if not wr.empty else wr
+
+        revenue = me_p["Tot Revenue"].sum() if not me_p.empty else 0
+        purchased = pu_p["Total"].sum() if not pu_p.empty else 0
+        consumed = sm_p["Consumption"].sum() if not sm_p.empty else 0
+        wasted = (siw_p["Total Cost"].sum() if not siw_p.empty else 0) + (wr_p["Total Cost"].sum() if not wr_p.empty else 0)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Sales Revenue", money(revenue))
+        c2.metric("Purchase Spend", money(purchased))
+        c3.metric("Consumption (units)", money(consumed))
+        c4.metric("Wastage Cost", money(wasted))
+
+        present_in = [name for df, name in [
+            (me_p, "Menu Engineering"), (sm_p, "Stock Movement"), (pu_p, "Purchases"),
+            (siw_p, "Sales-item Wastage"), (wr_p, "Wastage Report"),
+        ] if not df.empty]
+        st.caption(f"Found in: {', '.join(present_in) if present_in else 'nothing in range'}")
+
+        series = []
+        if not me_p.empty:
+            s = me_p.groupby("Report_Date")["Tot Revenue"].sum().reset_index()
+            s.columns = ["Report_Date", "Value"]
+            s["Series"] = "Sales Revenue"
+            series.append(s)
+        if not pu_p.empty:
+            s = pu_p.groupby("Report_Date")["Total"].sum().reset_index()
+            s.columns = ["Report_Date", "Value"]
+            s["Series"] = "Purchase Spend"
+            series.append(s)
+        if not sm_p.empty:
+            s = sm_p.groupby("Report_Date")["Consumption"].sum().reset_index()
+            s.columns = ["Report_Date", "Value"]
+            s["Series"] = "Consumption"
+            series.append(s)
+        if series:
+            combined = pd.concat(series, ignore_index=True)
+            fig = px.line(combined, x="Report_Date", y="Value", color="Series",
+                          title=f"{product} — Sales, Purchases & Consumption Over Time", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+        if not sm_p.empty:
+            fig = px.line(sm_p.groupby("Report_Date")["Ending Stock"].sum().reset_index(),
+                          x="Report_Date", y="Ending Stock", title=f"{product} — Ending Stock Over Time", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+        tabs = st.tabs(["Sales", "Stock Movement", "Purchases", "Wastage"])
+        tabs[0].dataframe(me_p.sort_values("Report_Date") if not me_p.empty else me_p, use_container_width=True, hide_index=True)
+        tabs[1].dataframe(sm_p.sort_values("Report_Date") if not sm_p.empty else sm_p, use_container_width=True, hide_index=True)
+        tabs[2].dataframe(pu_p.sort_values("Report_Date") if not pu_p.empty else pu_p, use_container_width=True, hide_index=True)
+        wastage_combined = pd.concat([siw_p, wr_p], ignore_index=True) if not siw_p.empty or not wr_p.empty else pd.DataFrame()
+        tabs[3].dataframe(wastage_combined.sort_values("Report_Date") if not wastage_combined.empty else wastage_combined, use_container_width=True, hide_index=True)
+
 # ------------------------------------------------ Complete Report Explorer
 elif page == "Complete Report Explorer":
     st.title("Complete Report Explorer")
@@ -210,7 +374,9 @@ elif page == "Complete Report Explorer":
 # --------------------------------------------------------- Stock Movement
 elif page == "Stock Movement":
     st.title("Stock Movement")
-    sm = F["stock_movement"]
+    sm = apply_category(F["stock_movement"])
+    if category_filter:
+        st.caption(f"Filtered to category: {', '.join(category_filter)}")
     if sm.empty:
         st.info("No Stock Movement data in range.")
     else:
