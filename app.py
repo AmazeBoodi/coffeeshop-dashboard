@@ -605,7 +605,11 @@ elif page == "Transactions by Time":
         st.info("No data in range.")
     else:
         det = tt[tt["Row_Type"] == "Detail"].copy()
-        det["Hour"] = det["Time_Label"].astype(str).str.slice(0, 2)
+        # split on ':' rather than slicing the first 2 chars - a single-digit
+        # hour like "9:14" has no leading zero, so slice(0,2) grabs "9:"
+        # instead of the hour, splitting 9am's transactions into their own
+        # garbled bar separate from the real "09" bucket.
+        det["Hour"] = det["Time_Label"].astype(str).str.split(":").str[0].str.zfill(2)
 
         c1, c2 = st.columns(2)
         totals = tt[tt["Row_Type"] == "Total"]
@@ -682,7 +686,11 @@ elif page == "🤖 Ask AI":
                 st.markdown(q)
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    context = build_context(F, start_date, end_date)
+                    context = build_context(
+                        F, start_date, end_date, weekday_filter=weekday_filter,
+                        Fp=Fp if compare_mode else None,
+                        prev_start=prev_start, prev_end=prev_end,
+                    )
                     answer, error = ask(q, context, st.session_state["ai_history"][:-1])
                 if error:
                     st.error(error)
