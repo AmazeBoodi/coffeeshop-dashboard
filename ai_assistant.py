@@ -15,7 +15,17 @@ committed. See .streamlit/secrets.toml.example and README.md for setup.
 import pandas as pd
 import streamlit as st
 
-MODEL = "llama-3.3-70b-versatile"
+# Groq retires/renames models without much notice, and which ones an
+# account/tier can actually reach varies. Rather than hardcode one and break
+# on the next deprecation, try each in order and stick with the first that
+# works, cached per session so it's only re-probed once.
+CANDIDATE_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "gemma2-9b-it",
+]
 
 
 def get_client():
@@ -169,10 +179,22 @@ def ask(question: str, context: str, history: list[tuple[str, str]]):
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": question})
 
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL, messages=messages, temperature=0.2, max_tokens=800,
-        )
-        return resp.choices[0].message.content, None
-    except Exception as e:
-        return None, f"Groq request failed: {e}"
+    working_model = st.session_state.get("_groq_working_model")
+    models_to_try = [working_model] if working_model else CANDIDATE_MODELS
+    last_error = None
+
+    for model in models_to_try:
+        try:
+            resp = client.chat.completions.create(
+                model=model, messages=messages, temperature=0.2, max_tokens=800,
+            )
+            st.session_state["_groq_working_model"] = model
+            return resp.choices[0].message.content, None
+        except Exception as e:
+            last_error = e
+            msg = str(e).lower()
+            if "model_not_found" in msg or "does not exist" in msg:
+                continue  # try the next candidate
+            break  # a different kind of failure (auth, rate limit, network) - stop trying models
+
+    return None, f"Groq request failed: {last_error}"
