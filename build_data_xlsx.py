@@ -37,9 +37,10 @@ def load_folder(folder_name: str) -> pd.DataFrame:
 
 
 def anonymize(df: pd.DataFrame) -> pd.DataFrame:
-    # strip the real branch name out of every column that carries it, so
-    # neither the workbook nor the deployed demo names the actual business.
-    return df.replace("Tribal", "Main Branch")
+    # strip real branch/staff names out of every column that carries them,
+    # so neither the workbook nor the deployed demo names actual people or
+    # the actual business. Extend this map if another real name turns up.
+    return df.replace({"Tribal": "Restaurant", "Tamer Shabayta": "Owner Balance"})
 
 
 def main():

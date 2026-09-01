@@ -125,6 +125,7 @@ with st.sidebar:
             "Voids & Discounts",
             "Transactions by Time",
             "Raw Data Explorer",
+            "🤖 Ask AI",
         ],
     )
 
@@ -646,3 +647,50 @@ elif page == "Raw Data Explorer":
 
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download filtered CSV", csv, f"{chosen}.csv", "text/csv")
+
+# --------------------------------------------------------------- Ask AI --
+elif page == "🤖 Ask AI":
+    st.title("Ask AI about your data")
+    st.caption(
+        "Powered by Groq. Answers are grounded in the KPIs and breakdowns "
+        "already shown across the dashboard, filtered to your current date "
+        "range and filters — it never sees anything you couldn't also see "
+        "yourself, and it won't invent numbers that aren't there."
+    )
+
+    from ai_assistant import get_client, build_context, ask
+
+    if get_client() is None:
+        st.warning(
+            "No Groq API key configured. Add `GROQ_API_KEY` to "
+            "`.streamlit/secrets.toml` locally (copy `.streamlit/secrets.toml.example`), "
+            "or under **App settings → Secrets** on Streamlit Community Cloud. "
+            "See README.md for the full setup."
+        )
+    else:
+        if "ai_history" not in st.session_state:
+            st.session_state["ai_history"] = []
+
+        for role, content in st.session_state["ai_history"]:
+            with st.chat_message(role):
+                st.markdown(content)
+
+        q = st.chat_input("Ask a question about the current data...")
+        if q:
+            st.session_state["ai_history"].append(("user", q))
+            with st.chat_message("user"):
+                st.markdown(q)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    context = build_context(F, start_date, end_date)
+                    answer, error = ask(q, context, st.session_state["ai_history"][:-1])
+                if error:
+                    st.error(error)
+                else:
+                    st.markdown(answer)
+                    st.session_state["ai_history"].append(("assistant", answer))
+
+        if st.session_state["ai_history"]:
+            if st.button("🧹 Clear conversation"):
+                st.session_state["ai_history"] = []
+                st.rerun()
